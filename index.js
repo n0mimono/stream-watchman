@@ -78,47 +78,49 @@ class Watch {
 
 // --- データ管理クラス ---
 class StreamDB {
-  static mockDB = {
-    m_streamer: [
-      { name: '配信者A', platform: 'YouTube', id1: '@example1', id2: 'UCxxxxxxxxxxxxxxxxxxxxxx', url: 'https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx' },
-      { name: '配信者B', platform: 'YouTube', id1: '@example2', id2: 'UCxxxxxxxxxxxxxxxxxxxxxx', url: 'https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx' }
-    ],
-    t_stream: []
-  };
-  /** mockDBまたはスプレッドシートから配信者リストを取得 */
-  static getMStreamer() {
-    if (EnvConfig.isNode()) {
-      return this.mockDB.m_streamer;
-    } else {
-      const sheet = SpreadsheetApp.getActive().getSheetByName('m_streamer');
-      const values = sheet.getDataRange().getValues();
-      if (values.length <= 1) return [];
-      return values.slice(1).map(row => ({
-        name: row[0], platform: row[1], id1: row[2], id2: row[3], url: row[4]
-      }));
-    }
-  }
-  /** mockDBまたはスプレッドシートから配信情報リストを取得 */
-  static getTStream() {
-    if (EnvConfig.isNode()) {
-      return this.mockDB.t_stream;
-    } else {
-      const sheet = SpreadsheetApp.getActive().getSheetByName('t_stream');
-      const values = sheet.getDataRange().getValues();
-      if (values.length <= 1) return [];
-      return values.slice(1).map(row => ({
-        platform: row[0], streamId: row[1], title: row[2], channelId: row[3], channelTitle: row[4], createdAt: row[5], scheduledAt: row[6], status: row[7], url: row[8]
-      }));
-    }
-  }
-  /** JST形式に変換 */
-  static toJSTISOString(dateStr) {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
-    const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
-    return jst.toISOString().replace('T', ' ').replace(/\..+/, '');
-  }
+  // static mockDB = { ... } はGASでは構文エラーになるため、下記のように修正
+  // mockDBをstaticプロパティとして初期化
 }
+StreamDB.mockDB = {
+  m_streamer: [
+    { name: '配信者A', platform: 'YouTube', id1: '@example1', id2: 'UCxxxxxxxxxxxxxxxxxxxxxx', url: 'https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx' },
+    { name: '配信者B', platform: 'YouTube', id1: '@example2', id2: 'UCxxxxxxxxxxxxxxxxxxxxxx', url: 'https://www.youtube.com/channel/UCxxxxxxxxxxxxxxxxxxxxxx' }
+  ],
+  t_stream: []
+};
+/** mockDBまたはスプレッドシートから配信者リストを取得 */
+StreamDB.getMStreamer = function() {
+  if (EnvConfig.isNode()) {
+    return this.mockDB.m_streamer;
+  } else {
+    const sheet = SpreadsheetApp.getActive().getSheetByName('m_streamer');
+    const values = sheet.getDataRange().getValues();
+    if (values.length <= 1) return [];
+    return values.slice(1).map(row => ({
+      name: row[0], platform: row[1], id1: row[2], id2: row[3], url: row[4]
+    }));
+  }
+};
+/** mockDBまたはスプレッドシートから配信情報リストを取得 */
+StreamDB.getTStream = function() {
+  if (EnvConfig.isNode()) {
+    return this.mockDB.t_stream;
+  } else {
+    const sheet = SpreadsheetApp.getActive().getSheetByName('t_stream');
+    const values = sheet.getDataRange().getValues();
+    if (values.length <= 1) return [];
+    return values.slice(1).map(row => ({
+      platform: row[0], streamId: row[1], title: row[2], channelId: row[3], channelTitle: row[4], createdAt: row[5], scheduledAt: row[6], status: row[7], url: row[8]
+    }));
+  }
+};
+/** JST形式に変換 */
+StreamDB.toJSTISOString = function(dateStr) {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  const jst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  return jst.toISOString().replace('T', ' ').replace(/\..+/, '');
+};
 
 // --- YouTube APIユーティリティ ---
 class YouTubeAPI {
@@ -230,7 +232,7 @@ class YouTubeAPI {
 // --- Slack通知ユーティリティ ---
 class SlackNotifier {
   /** Slack通知用関数（Block Kit形式・status色分け対応） */
-  static async notify(channelTitle, title, liveId, status, platform) {
+  static async notify(channelTitle, title, liveId, status, platform, scheduledAt) {
     if (!EnvConfig.getSlackNotifyEnabled()) {
       Watch.info('[Slack通知] 無効化されています:', channelTitle, title, liveId, status, platform);
       return;
@@ -245,16 +247,24 @@ class SlackNotifier {
       ? `https://www.youtube.com/watch?v=${liveId}`
       : liveId;
     let color = '#cccccc';
+    // ステータス表示を日本語に変換＆色を適切に設定
     let statusText = status;
     if (status === 'upcoming') {
-      color = '#f2c744';
-      statusText = ':large_yellow_circle: upcoming';
+      statusText = 'upcoming（公開予定）';
+      color = '#f2c744'; // 黄色
     } else if (status === 'live') {
-      color = '#e01e5a';
-      statusText = ':red_circle: live';
+      statusText = 'live（配信中）';
+      color = '#e01e5a'; // 赤
     } else if (status === 'none') {
-      color = '#cccccc';
-      statusText = 'none';
+      statusText = 'none（終了）';
+      color = '#cccccc'; // グレー
+    } else {
+      color = '#cccccc'; // デフォルト
+    }
+    // scheduledAtを日本時間で表示
+    let scheduledAtJST = scheduledAt || '';
+    if (scheduledAtJST) {
+      scheduledAtJST = scheduledAtJST.replace(/\s.*/, '');
     }
     const payload = {
       attachments: [
@@ -265,7 +275,7 @@ class SlackNotifier {
               type: 'section',
               text: {
                 type: 'mrkdwn',
-                text: `*【${platform}】${channelTitle}*\n*${title}*\n<${streamUrl}|配信ページ>`
+                text: `*【${platform}】${channelTitle}*\n*${title}*\n*公開/配信日時:* ${scheduledAtJST}`
               }
             },
             {
@@ -278,6 +288,15 @@ class SlackNotifier {
               ]
             }
           ]
+        }
+      ],
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: streamUrl
+          }
         }
       ]
     };
@@ -356,11 +375,8 @@ async function processYouTubeStreams() {
           sheet.appendRow([platform, liveId, title, channelIdFromLive, channelTitleFromLive, now, scheduledAt, status, streamUrl]);
         }
         Watch.info(`    [追加] t_streamに追加: ${liveId}`);
-        if (status === 'upcoming' || status === 'live') {
-          await SlackNotifier.notify(channelTitleFromLive, title, liveId, status, platform);
-        } else {
-          Watch.debug(`    [通知スキップ] status=${status} のためSlack通知しません: ${liveId}`);
-        }
+        // ステータスに関係なく新規は必ず通知
+        await SlackNotifier.notify(channelTitleFromLive, title, liveId, status, platform, scheduledAt);
       } else {
         // 既存: 既存データの更新（status変化のみで上書き）
         const tItem = tStream[tIndex];
@@ -380,11 +396,8 @@ async function processYouTubeStreams() {
             sheet.getRange(tIndex + 2, 3, 1, 7).setValues([[title, channelIdFromLive, channelTitleFromLive, tItem.createdAt, scheduledAt, status, streamUrl]]);
           }
           Watch.info(`    [更新] t_streamのstatusを上書き: ${liveId} → ${status}`);
-          if (status === 'upcoming' || status === 'live') {
-            await SlackNotifier.notify(channelTitleFromLive, title, liveId, status, platform);
-          } else {
-            Watch.debug(`    [通知スキップ] status=${status} のためSlack通知しません: ${liveId}`);
-          }
+          // ステータスが変化した場合は必ず通知（noneも含む）
+          await SlackNotifier.notify(channelTitleFromLive, title, liveId, status, platform, scheduledAt);
         } else {
           Watch.info(`    [判定] t_streamに既に存在しstatusも同じ: ${liveId}`);
         }
